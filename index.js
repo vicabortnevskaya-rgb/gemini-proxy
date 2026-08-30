@@ -54,9 +54,11 @@ const server = http.createServer(async (req, res) => {
       delete data.model;
 
       const geminiData = JSON.stringify(data);
+      
+      // ИСПОЛЬЗУЕМ СТРИМИНГОВЫЙ ЭНДПОИНТ GOOGLE
       const geminiReqOptions = {
         hostname: 'generativelanguage.googleapis.com',
-        path: `/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`,
+        path: `/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -65,11 +67,40 @@ const server = http.createServer(async (req, res) => {
       };
 
       const proxyReq = https.request(geminiReqOptions, (proxyRes) => {
-        let geminiResponseData = '';
-        proxyRes.on('data', chunk => { geminiResponseData += chunk; });
+        // Устанавливаем заголовки потокового ответа для клиента
+        res.writeHead(proxyRes.statusCode, { 
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive'
+        });
+
+        let buffer = '';
+
+        proxyRes.on('data', chunk => {
+          buffer += chunk.toString();
+          const lines = buffer.split('\n');
+          buffer = lines.pop(); // Сохраняем неполную строку в буфер
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('data:')) {
+              const jsonStr = trimmed.replace(/^data:\s*/, '');
+              if (jsonStr === '[DONE]') continue;
+              try {
+                const parsed = JSON.parse(jsonStr);
+                const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (text) {
+                  res.write(text); // Шлем чистый текст во Flutter по мере готовности
+                }
+              } catch (e) {
+                // Игнорируем ошибки неполных JSON-чанк-данных
+              }
+            }
+          }
+        });
+
         proxyRes.on('end', () => {
-          res.writeHead(proxyRes.statusCode, { 'Content-Type': 'application/json' });
-          res.end(geminiResponseData);
+          res.end();
         });
       });
 
