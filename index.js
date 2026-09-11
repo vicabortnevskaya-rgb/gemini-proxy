@@ -31,7 +31,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const data = JSON.parse(body);
       let userText = data.contents[0].parts[0].text;
-      const model = data.model || 'gemini-3.8-flash';
+      const model = data.model || 'gemini-3.7-flash';
 
       const urlRegex = /(https?:\/\/[^\s]+)/g;
       const urls = userText.match(urlRegex);
