@@ -31,6 +31,8 @@ const server = http.createServer(async (req, res) => {
     try {
       const data = JSON.parse(body);
       let userText = data.contents[0].parts[0].text;
+      
+      // Оставила вашу стабильную версию 3.7
       const model = data.model || 'gemini-3.7-flash';
 
       const urlRegex = /(https?:\/\/[^\s]+)/g;
@@ -55,7 +57,6 @@ const server = http.createServer(async (req, res) => {
 
       const geminiData = JSON.stringify(data);
       
-      // ИСПОЛЬЗУЕМ СТРИМИНГОВЫЙ ЭНДПОИНТ GOOGLE
       const geminiReqOptions = {
         hostname: 'generativelanguage.googleapis.com',
         path: `/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${process.env.GEMINI_API_KEY}`,
@@ -66,51 +67,68 @@ const server = http.createServer(async (req, res) => {
         }
       };
 
-      const proxyReq = https.request(geminiReqOptions, (proxyRes) => {
-        // Устанавливаем заголовки потокового ответа для клиента
-        res.writeHead(proxyRes.statusCode, { 
-          'Content-Type': 'text/plain; charset=utf-8',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive'
-        });
+      // НОВЫЙ БЛОК: Функция авто-повтора при сбоях
+      const sendRequestWithRetry = (retriesLeft = 2, delayMs = 1200) => {
+        const proxyReq = https.request(geminiReqOptions, (proxyRes) => {
+          
+          // Если ошибка 503 или 429 и есть попытки - повторяем
+          if ((proxyRes.statusCode === 503 || proxyRes.statusCode === 429) && retriesLeft > 0) {
+            console.log(`[RETRY] Ошибка ${proxyRes.statusCode}. Повтор через ${delayMs}мс...`);
+            setTimeout(() => {
+              sendRequestWithRetry(retriesLeft - 1, delayMs * 1.5);
+            }, delayMs);
+            return;
+          }
 
-        let buffer = '';
+          res.writeHead(proxyRes.statusCode, { 
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive'
+          });
 
-        proxyRes.on('data', chunk => {
-          buffer += chunk.toString();
-          const lines = buffer.split('\n');
-          buffer = lines.pop(); // Сохраняем неполную строку в буфер
+          let buffer = '';
 
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (trimmed.startsWith('data:')) {
-              const jsonStr = trimmed.replace(/^data:\s*/, '');
-              if (jsonStr === '[DONE]') continue;
-              try {
-                const parsed = JSON.parse(jsonStr);
-                const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-                if (text) {
-                  res.write(text); // Шлем чистый текст во Flutter по мере готовности
-                }
-              } catch (e) {
-                // Игнорируем ошибки неполных JSON-чанк-данных
+          proxyRes.on('data', chunk => {
+            buffer += chunk.toString();
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); 
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (trimmed.startsWith('data:')) {
+                const jsonStr = trimmed.replace(/^data:\s*/, '');
+                if (jsonStr === '[DONE]') continue;
+                try {
+                  const parsed = JSON.parse(jsonStr);
+                  const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+                  if (text) {
+                    res.write(text); 
+                  }
+                } catch (e) {}
               }
             }
+          });
+
+          proxyRes.on('end', () => {
+            res.end();
+          });
+        });
+
+        proxyReq.on('error', (e) => {
+          if (retriesLeft > 0) {
+            setTimeout(() => sendRequestWithRetry(retriesLeft - 1, delayMs * 1.5), delayMs);
+          } else {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: e.message }));
           }
         });
 
-        proxyRes.on('end', () => {
-          res.end();
-        });
-      });
+        proxyReq.write(geminiData);
+        proxyReq.end();
+      };
 
-      proxyReq.on('error', (e) => {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: e.message }));
-      });
-
-      proxyReq.write(geminiData);
-      proxyReq.end();
+      // Запускаем отправку
+      sendRequestWithRetry();
 
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
