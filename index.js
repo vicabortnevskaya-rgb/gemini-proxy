@@ -32,8 +32,8 @@ const server = http.createServer(async (req, res) => {
       const data = JSON.parse(body);
       let userText = data.contents[0].parts[0].text;
       
-      // Оставила вашу стабильную версию 3.7
-      const model = data.model || 'gemini-3.7-flash';
+      // Оставила вашу стабильную версию 3.6
+      const model = data.model || 'gemini-3.6-flash';
 
       const urlRegex = /(https?:\/\/[^\s]+)/g;
       const urls = userText.match(urlRegex);
